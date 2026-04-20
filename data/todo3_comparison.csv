@@ -1,0 +1,6 @@
+Benchmark,Vanilla_Time,Vanilla_Area,Vanilla_Delay,ML_Time,ML_Area,ML_Delay
+arbiter,0.55,3248,22,4.8,8984,71
+square,1.33,8928,62,8.24,8332,91
+sqrt,2.02,19571,1345,4.02,15843,3848
+bar,0.2,1745,5,1.32,1762,5
+adder,0.04,606,64,0.19,492,64

@@ -910,6 +910,7 @@ Gia_Man_t * Abc_FrameGetGia( Abc_Frame_t * pAbc )
 ***********************************************************************/
 void Abc_Init( Abc_Frame_t * pAbc )
 {
+
     Cmd_CommandAdd( pAbc, "Printing",     "ps",            Abc_CommandPrintStats,       0 );
     Cmd_CommandAdd( pAbc, "Printing",     "print_stats",   Abc_CommandPrintStats,       0 );
     Cmd_CommandAdd( pAbc, "Printing",     "print_exdc",    Abc_CommandPrintExdc,        0 );
@@ -15343,11 +15344,12 @@ int Abc_CommandCut( Abc_Frame_t * pAbc, int argc, char ** argv )
 
     // set defaults
     fOracle = 0;
+    int fCsv = 0;
     memset( pParams, 0, sizeof(Cut_Params_t) );
     pParams->nVarsMax    = 5;     // the max cut size ("k" of the k-feasible cuts)
-    pParams->nKeepMax    = 1000;  // the max number of cuts kept at a node
+    pParams->nKeepMax    = 100000;  // the max number of cuts kept at a node
     pParams->fTruth      = 1;     // compute truth tables
-    pParams->fFilter     = 1;     // filter dominated cuts
+    pParams->fFilter     = 0;     // filter dominated cuts
     pParams->fDrop       = 0;     // drop cuts on the fly
     pParams->fDag        = 1;     // compute DAG cuts
     pParams->fTree       = 0;     // compute tree cuts
@@ -15360,10 +15362,13 @@ int Abc_CommandCut( Abc_Frame_t * pAbc, int argc, char ** argv )
     pParams->fNpnSave    = 0;     // enables dumping truth tables
     pParams->fVerbose    = 0;     // the verbosiness flag
     Extra_UtilGetoptReset();
-    while ( ( c = Extra_UtilGetopt( argc, argv, "KMtfdxyglzamjvosh" ) ) != EOF )
+    while ( ( c = Extra_UtilGetopt( argc, argv, "KMtfdxyglzamjvoshc" ) ) != EOF )
     {
         switch ( c )
         {
+        case 'c':
+            fCsv ^= 1;
+            break;
         case 'K':
             if ( globalUtilOptind >= argc )
             {
@@ -15464,6 +15469,7 @@ int Abc_CommandCut( Abc_Frame_t * pAbc, int argc, char ** argv )
 
     if ( fOracle )
         pParams->fRecord = 1;
+    pParams->fCsv = fCsv;
     pCutMan = Abc_NtkCuts( pNtk, pParams );
     if ( fOracle )
         pCutOracle = Cut_OracleStart( pCutMan );
@@ -15477,7 +15483,7 @@ int Abc_CommandCut( Abc_Frame_t * pAbc, int argc, char ** argv )
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: cut [-K num] [-M num] [-tfdcovamjsvh]\n" );
+    Abc_Print( -2, "usage: cut [-K num] [-M num] [-tfdcovamjvoshc]\n" );
     Abc_Print( -2, "\t         computes k-feasible cuts for the AIG\n" );
     Abc_Print( -2, "\t-K num : max number of leaves (%d <= num <= %d) [default = %d]\n",     CUT_SIZE_MIN, CUT_SIZE_MAX, pParams->nVarsMax );
     Abc_Print( -2, "\t-M num : max number of cuts stored at a node [default = %d]\n",        pParams->nKeepMax );
@@ -15494,6 +15500,7 @@ usage:
     Abc_Print( -2, "\t-j     : toggle removing fanouts due to XOR/MUX [default = %s]\n",     pParams->fAdjust?  "yes": "no" );
     Abc_Print( -2, "\t-s     : toggle creating library of 6-var functions [default = %s]\n", pParams->fNpnSave?  "yes": "no" );
     Abc_Print( -2, "\t-v     : toggle printing verbose information [default = %s]\n",        pParams->fVerbose? "yes": "no" );
+    Abc_Print( -2, "\t-c     : output cuts in CSV format (root_idx,cut_idx,...)\n" );
     Abc_Print( -2, "\t-h     : print the command usage\n");
     return 1;
 }

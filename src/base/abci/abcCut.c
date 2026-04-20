@@ -29,6 +29,9 @@ ABC_NAMESPACE_IMPL_START
 ////////////////////////////////////////////////////////////////////////
 
 static void Abc_NtkPrintCuts( void * p, Abc_Ntk_t * pNtk, int fSeq );
+static void Abc_NtkPrintCutsCsv( void * p, Abc_Ntk_t * pNtk, int fSeq );
+static int  Abc_NtkComputeCutVolume( Abc_Ntk_t * pNtk, int iRoot, int * pLeaves, int nLeaves );
+static int  Abc_NtkComputeCutHeight( Abc_Ntk_t * pNtk, int iRoot, int * pLeaves, int nLeaves );
 static void Abc_NtkPrintCuts_( void * p, Abc_Ntk_t * pNtk, int fSeq );
 
 extern int nTotal, nGood, nEqual;
@@ -200,17 +203,25 @@ Cut_Man_t * Abc_NtkCuts( Abc_Ntk_t * pNtk, Cut_Params_t * pParams )
     Extra_ProgressBarStop( pProgress );
     Vec_PtrFree( vNodes );
     Vec_IntFree( vChoices );
-    Cut_ManPrintStats( p );
-ABC_PRT( "TOTAL", Abc_Clock() - clk );
+    if ( !pParams->fCsv )
+    {
+        Cut_ManPrintStats( p );
+        ABC_PRT( "TOTAL", Abc_Clock() - clk );
+    }
+    else
+    {
+        // For CSV mode: show brief stats
+        Cut_ManPrintStats( p );
+    }
 //    printf( "Area = %d.\n", Abc_NtkComputeArea( pNtk, p ) );
-//Abc_NtkPrintCuts( p, pNtk, 0 );
+    Abc_NtkPrintCuts( p, pNtk, 0 );
 //    Cut_ManPrintStatsToFile( p, pNtk->pSpec, Abc_Clock() - clk );
 
     // temporary printout of stats
-    if ( nTotal )
-    printf( "Total cuts = %d. Good cuts = %d.  Ratio = %5.2f\n", nTotal, nGood, ((double)nGood)/nTotal );
+    if ( !pParams->fCsv && nTotal )
+        printf( "Total cuts = %d. Good cuts = %d.  Ratio = %5.2f\n", nTotal, nGood, ((double)nGood)/nTotal );
     if ( pParams->fAdjust )
-    Abc_NtkCutsAddFanunt( pNtk );
+        Abc_NtkCutsAddFanunt( pNtk );
     return p;
 }
 
@@ -542,16 +553,151 @@ void Abc_NodeFreeCuts( void * p, Abc_Obj_t * pObj )
 ***********************************************************************/
 void Abc_NtkPrintCuts( void * p, Abc_Ntk_t * pNtk, int fSeq )
 {
-    Cut_Cut_t * pList;
-    Abc_Obj_t * pObj;
-    int i;
+    Cut_Params_t * pParams = Cut_ManReadParams( (Cut_Man_t *)p );
+    if ( pParams && pParams->fCsv )
+    {
+        Abc_NtkPrintCutsCsv( p, pNtk, fSeq );
+        return;
+    }
+
+    Cut_Cut_t * pList, * pCut;
+    Abc_Obj_t * pObj, * pLeaf;
+    int i, k;
     printf( "Cuts of the network:\n" );
     Abc_NtkForEachObj( pNtk, pObj, i )
     {
         pList = (Cut_Cut_t *)Abc_NodeReadCuts( (Cut_Man_t *)p, pObj );
+        if ( pList == NULL )
+            continue;
         printf( "Node %s:\n", Abc_ObjName(pObj) );
-        Cut_CutPrintList( pList, fSeq );
+        for ( pCut = pList; pCut; pCut = pCut->pNext )
+        {
+            printf( "  %d : {", pCut->nLeaves );
+            for ( k = 0; k < (int)pCut->nLeaves; k++ )
+            {
+                pLeaf = Abc_NtkObj( pNtk, fSeq ? (pCut->pLeaves[k] >> CUT_SHIFT) : pCut->pLeaves[k] );
+                printf( " %s", Abc_ObjName(pLeaf) );
+                if ( fSeq && (pCut->pLeaves[k] & CUT_MASK) )
+                    printf( "(%d)", pCut->pLeaves[k] & CUT_MASK );
+            }
+            printf( " }\n" );
+        }
     }
+}
+
+static int Abc_NtkComputeCutVolume_rec( Abc_Ntk_t * pNtk, int iNode, int * pLeaves, int nLeaves, Vec_Int_t * vVisited )
+{
+    int i;
+    if ( Vec_IntFind( vVisited, iNode ) >= 0 )
+        return 0;
+    for ( i = 0; i < nLeaves; i++ )
+        if ( pLeaves[i] == iNode )
+            return 0;
+    Vec_IntPush( vVisited, iNode );
+    Abc_Obj_t * pObj = Abc_NtkObj( pNtk, iNode );
+    if ( !Abc_ObjIsNode(pObj) )
+        return 0;
+    return 1 + Abc_NtkComputeCutVolume_rec( pNtk, Abc_ObjFaninId0(pObj), pLeaves, nLeaves, vVisited )
+             + Abc_NtkComputeCutVolume_rec( pNtk, Abc_ObjFaninId1(pObj), pLeaves, nLeaves, vVisited );
+}
+
+static int Abc_NtkComputeCutVolume( Abc_Ntk_t * pNtk, int iRoot, int * pLeaves, int nLeaves )
+{
+    Vec_Int_t * vVisited = Vec_IntAlloc( 100 );
+    int volume = Abc_NtkComputeCutVolume_rec( pNtk, iRoot, pLeaves, nLeaves, vVisited );
+    Vec_IntFree( vVisited );
+    return volume;
+}
+
+static int Abc_NtkComputeCutHeight_rec( Abc_Ntk_t * pNtk, int iNode, int * pLeaves, int nLeaves, Vec_Int_t * vMemo )
+{
+    int i;
+    for ( i = 0; i < nLeaves; i++ )
+        if ( pLeaves[i] == iNode )
+            return 0;
+    int h = Vec_IntEntry( vMemo, iNode );
+    if ( h >= 0 )
+        return h;
+    Abc_Obj_t * pObj = Abc_NtkObj( pNtk, iNode );
+    if ( !Abc_ObjIsNode(pObj) )
+    {
+        Vec_IntWriteEntry( vMemo, iNode, 0 );
+        return 0;
+    }
+    int h0 = Abc_NtkComputeCutHeight_rec( pNtk, Abc_ObjFaninId0(pObj), pLeaves, nLeaves, vMemo );
+    int h1 = Abc_NtkComputeCutHeight_rec( pNtk, Abc_ObjFaninId1(pObj), pLeaves, nLeaves, vMemo );
+    h = 1 + (h0 > h1 ? h0 : h1);
+    Vec_IntWriteEntry( vMemo, iNode, h );
+    return h;
+}
+
+static int Abc_NtkComputeCutHeight( Abc_Ntk_t * pNtk, int iRoot, int * pLeaves, int nLeaves )
+{
+    Vec_Int_t * vMemo = Vec_IntStart( Abc_NtkObjNumMax(pNtk) + 1 );
+    int height = Abc_NtkComputeCutHeight_rec( pNtk, iRoot, pLeaves, nLeaves, vMemo );
+    Vec_IntFree( vMemo );
+    return height;
+}
+
+static void Abc_NtkPrintCutsCsv( void * p, Abc_Ntk_t * pNtk, int fSeq )
+{
+    Cut_Cut_t * pList, * pCut;
+    Abc_Obj_t * pObj;
+    FILE * pFile;
+    int i, k, cutId = 0, nCutsPerNode, nTotalCuts = 0, nNodesWithMultipleCuts = 0;
+    int nObjsWithCuts = 0;
+
+    pFile = fopen( "cuts.csv", "w" );
+    if ( pFile == NULL )
+    {
+        printf( "Cannot open file \"cuts.csv\" for writing.\n" );
+        return;
+    }
+
+    fprintf( pFile, "root_idx,cut_idx,l1_idx,l2_idx,l3_idx,l4_idx,l5_idx,vol_cut,cut_height,canon_tt_0,cannon_tt_1\n" );
+    Abc_NtkForEachObj( pNtk, pObj, i )
+    {
+        pList = (Cut_Cut_t *)Abc_NodeReadCuts( (Cut_Man_t *)p, pObj );
+        if ( pList == NULL )
+            continue;
+        
+        nObjsWithCuts++;
+        nCutsPerNode = 0;
+        for ( pCut = pList; pCut; pCut = pCut->pNext )
+        {
+            nCutsPerNode++;
+            nTotalCuts++;
+            int leaves[5] = { -1, -1, -1, -1, -1 };
+            int nLeaves = pCut->nLeaves;
+            int rootId = Abc_ObjId(pObj);
+            for ( k = 0; k < nLeaves && k < 5; k++ )
+            {
+                leaves[k] = fSeq ? (pCut->pLeaves[k] >> CUT_SHIFT) : pCut->pLeaves[k];
+            }
+            int vol = Abc_NtkComputeCutVolume( pNtk, rootId, leaves, nLeaves );
+            int height = Abc_NtkComputeCutHeight( pNtk, rootId, leaves, nLeaves );
+            
+            // Get truth table words
+            unsigned * puTruth = Cut_CutReadTruth(pCut);
+            unsigned tt0 = puTruth ? puTruth[0] : 0;
+            unsigned tt1 = puTruth ? (pCut->nLeaves > 5 ? puTruth[1] : 0) : 0;
+
+            fprintf( pFile, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u\n",
+                rootId,
+                ++cutId,
+                leaves[0], leaves[1], leaves[2], leaves[3], leaves[4],
+                vol,
+                height,
+                tt0,
+                tt1 );
+        }
+        if ( nCutsPerNode > 1 )
+            nNodesWithMultipleCuts++;
+    }
+    // Print diagnostic info as a comment (lines starting with #)
+    fprintf( pFile, "# Total cuts: %d, Nodes with cuts: %d, Nodes with multiple cuts: %d\n", nTotalCuts, nObjsWithCuts, nNodesWithMultipleCuts );
+    fclose( pFile );
+    printf( "Cut data written to \"cuts.csv\".\n" );
 }
 
 /**Function*************************************************************
@@ -697,4 +843,3 @@ Vec_Int_t * Abc_NtkGetNodeAttributes2( Abc_Ntk_t * pNtk )
 
 
 ABC_NAMESPACE_IMPL_END
-
