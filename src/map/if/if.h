@@ -319,6 +319,8 @@ struct If_Cut_t_
     float              Edge;          // the edge flow
     float              Power;         // the power flow
     float              Delay;         // delay of the cut
+    // mycode
+    float              ml_score;      // <--- NEW: ML Priority Score
     int                iCutFunc;      // TT ID of the cut
     int                uMaskFunc;     // polarity bitmask
     unsigned           uSign;         // cut signature

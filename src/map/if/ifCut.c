@@ -610,34 +610,74 @@ static inline int If_ManSortCompare( If_Man_t * p, If_Cut_t * pC0, If_Cut_t * pC
                 return 1;
             return 0;
         }
-        if ( p->SortMode == 0 ) // delay
+        // if ( p->SortMode == 0 ) // delay
+        // {
+        //     if ( pC0->Delay < pC1->Delay - p->fEpsilon )
+        //         return -1;
+        //     if ( pC0->Delay > pC1->Delay + p->fEpsilon )
+        //         return 1;
+        //     if ( pC0->nLeaves < pC1->nLeaves )
+        //         return -1;
+        //     if ( pC0->nLeaves > pC1->nLeaves )
+        //         return 1;
+        //     if ( pC0->Area < pC1->Area - p->fEpsilon )
+        //         return -1;
+        //     if ( pC0->Area > pC1->Area + p->fEpsilon )
+        //         return 1;
+        //     if ( pC0->Edge < pC1->Edge - p->fEpsilon )
+        //         return -1;
+        //     if ( pC0->Edge > pC1->Edge + p->fEpsilon )
+        //         return 1;
+        //     if ( pC0->Power < pC1->Power - p->fEpsilon )
+        //         return -1;
+        //     if ( pC0->Power > pC1->Power + p->fEpsilon )
+        //         return 1;
+        //     if ( pC0->fUseless < pC1->fUseless )
+        //         return -1;
+        //     if ( pC0->fUseless > pC1->fUseless )
+        //         return 1;
+        //     return 0;
+        // }
+        
+        // mycode
+        // ========================================
+        // THE NEW ML-DRIVEN PRIORITY QUEUE
+        // ========================================
+        if ( p->SortMode == 0 ) // delay mapping pass
         {
+            // 1. PRIMARY SORT: Vanilla Delay (Protect the critical path!)
             if ( pC0->Delay < pC1->Delay - p->fEpsilon )
                 return -1;
             if ( pC0->Delay > pC1->Delay + p->fEpsilon )
                 return 1;
+                
+            // 2. TIE-BREAKER 1: ML Score (Let AI pick the best Area among equally fast cuts)
+            if ( pC0->ml_score < pC1->ml_score - p->fEpsilon )
+                return -1;
+            if ( pC0->ml_score > pC1->ml_score + p->fEpsilon )
+                return 1;
+                
+            // 3. TIE-BREAKER 2: Number of Leaves (Smaller cuts are structurally better)
             if ( pC0->nLeaves < pC1->nLeaves )
                 return -1;
             if ( pC0->nLeaves > pC1->nLeaves )
                 return 1;
+                
+            // 4. TIE-BREAKER 3: Area Flow
             if ( pC0->Area < pC1->Area - p->fEpsilon )
                 return -1;
             if ( pC0->Area > pC1->Area + p->fEpsilon )
                 return 1;
-            if ( pC0->Edge < pC1->Edge - p->fEpsilon )
-                return -1;
-            if ( pC0->Edge > pC1->Edge + p->fEpsilon )
-                return 1;
-            if ( pC0->Power < pC1->Power - p->fEpsilon )
-                return -1;
-            if ( pC0->Power > pC1->Power + p->fEpsilon )
-                return 1;
+                
+            // 5. TIE-BREAKER 4: Useless Flag
             if ( pC0->fUseless < pC1->fUseless )
                 return -1;
             if ( pC0->fUseless > pC1->fUseless )
                 return 1;
+                
             return 0;
         }
+
         assert( p->SortMode == 2 ); // delay old
         if ( pC0->Delay < pC1->Delay - p->fEpsilon )
             return -1;

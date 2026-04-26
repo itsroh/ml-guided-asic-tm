@@ -40,6 +40,7 @@ static Vec_Int_t ** g_Fanouts = NULL;
 static int * g_RevLevels = NULL;
 
 // ML filtering statistics
+static int useML = 0; // Flag to track if we should run ML
 static int g_TotalCands = 0;     // Total candidate cuts
 static int g_MLFiltered = 0;     // Cuts filtered by ML (class >= 3)
 static int g_MLAdjusted = 0;     // Cuts adjusted by ML penalty
@@ -47,200 +48,263 @@ static int g_ClassDist[5] = {0, 0, 0, 0, 0};  // Class distribution for debuggin
 
 #include <math.h> // Required for sqrt() in BatchNorm
 
-#define INPUT_SIZE  11
-#define HIDDEN1 128
-#define HIDDEN2 64
-#define HIDDEN3 32
-#define OUTPUT_SIZE 5
+// #define INPUT_SIZE  11
+// #define HIDDEN1 128
+// #define HIDDEN2 64
+// #define HIDDEN3 32
+// #define OUTPUT_SIZE 5
 
-// --- Linear Layer Weights & Biases ---
-float W1[HIDDEN1][INPUT_SIZE], B1[HIDDEN1];
-float W2[HIDDEN2][HIDDEN1], B2[HIDDEN2];
-float W3[HIDDEN3][HIDDEN2], B3[HIDDEN3];
-float W4[OUTPUT_SIZE][HIDDEN3], B4[OUTPUT_SIZE];
+// // --- Linear Layer Weights & Biases ---
+// float W1[HIDDEN1][INPUT_SIZE], B1[HIDDEN1];
+// float W2[HIDDEN2][HIDDEN1], B2[HIDDEN2];
+// float W3[HIDDEN3][HIDDEN2], B3[HIDDEN3];
+// float W4[OUTPUT_SIZE][HIDDEN3], B4[OUTPUT_SIZE];
 
-// --- BatchNorm 1 (Layer 2 in Sequential) ---
-float BN1_W[HIDDEN1], BN1_B[HIDDEN1], BN1_M[HIDDEN1], BN1_V[HIDDEN1];
+// // --- BatchNorm 1 (Layer 2 in Sequential) ---
+// float BN1_W[HIDDEN1], BN1_B[HIDDEN1], BN1_M[HIDDEN1], BN1_V[HIDDEN1];
 
-// --- BatchNorm 2 (Layer 5 in Sequential) ---
-float BN2_W[HIDDEN2], BN2_B[HIDDEN2], BN2_M[HIDDEN2], BN2_V[HIDDEN2];
+// // --- BatchNorm 2 (Layer 5 in Sequential) ---
+// float BN2_W[HIDDEN2], BN2_B[HIDDEN2], BN2_M[HIDDEN2], BN2_V[HIDDEN2];
 
-// --- Scaler Data ---
-float scaler_mean[INPUT_SIZE];
-float scaler_scale[INPUT_SIZE];
+// // --- Scaler Data ---
+// float scaler_mean[INPUT_SIZE];
+// float scaler_scale[INPUT_SIZE];
 
-void Normalize(float *x)
-{
-    for (int i = 0; i < INPUT_SIZE; i++) {
-        if (scaler_scale[i] != 0)
-            x[i] = (x[i] - scaler_mean[i]) / scaler_scale[i];
-        else
-            x[i] = 0;
-    }
-}
+// void Normalize(float *x)
+// {
+//     for (int i = 0; i < INPUT_SIZE; i++) {
+//         if (scaler_scale[i] != 0)
+//             x[i] = (x[i] - scaler_mean[i]) / scaler_scale[i];
+//         else
+//             x[i] = 0;
+//     }
+// }
 
-float relu(float x) { return x > 0 ? x : 0; }
+// float relu(float x) { return x > 0 ? x : 0; }
 
-int argmax(float *arr, int n)
-{
-    int idx = 0;
-    for (int i = 1; i < n; i++)
-        if (arr[i] > arr[idx]) idx = i;
-    return idx;
-}
+// int argmax(float *arr, int n)
+// {
+//     int idx = 0;
+//     for (int i = 1; i < n; i++)
+//         if (arr[i] > arr[idx]) idx = i;
+//     return idx;
+// }
 
-int PredictClass(float *input)
-{
-    float h1[HIDDEN1], h2[HIDDEN2], h3[HIDDEN3], out[OUTPUT_SIZE];
+// int PredictClass(float *input)
+// {
+//     float h1[HIDDEN1], h2[HIDDEN2], h3[HIDDEN3], out[OUTPUT_SIZE];
 
-    // 1. Standard Scaler
-    Normalize(input);
+//     // 1. Standard Scaler
+//     Normalize(input);
 
-    // 2. Block 1: Linear(13, 128) -> ReLU -> BatchNorm1d(128)
-    for (int i = 0; i < HIDDEN1; i++) {
-        float sum = B1[i];
-        for (int j = 0; j < INPUT_SIZE; j++)
-            sum += W1[i][j] * input[j];
+//     // 2. Block 1: Linear(13, 128) -> ReLU -> BatchNorm1d(128)
+//     for (int i = 0; i < HIDDEN1; i++) {
+//         float sum = B1[i];
+//         for (int j = 0; j < INPUT_SIZE; j++)
+//             sum += W1[i][j] * input[j];
             
-        float relu_val = relu(sum);
+//         float relu_val = relu(sum);
         
-        // BatchNorm math: y = ((x - mean) / sqrt(var + eps)) * weight + bias
-        // PyTorch default eps is 1e-5
-        h1[i] = ((relu_val - BN1_M[i]) / sqrt(BN1_V[i] + 1e-5f)) * BN1_W[i] + BN1_B[i];
-    }
+//         // BatchNorm math: y = ((x - mean) / sqrt(var + eps)) * weight + bias
+//         // PyTorch default eps is 1e-5
+//         h1[i] = ((relu_val - BN1_M[i]) / sqrt(BN1_V[i] + 1e-5f)) * BN1_W[i] + BN1_B[i];
+//     }
 
-    // 3. Block 2: Linear(128, 64) -> ReLU -> BatchNorm1d(64)
-    for (int i = 0; i < HIDDEN2; i++) {
-        float sum = B2[i];
-        for (int j = 0; j < HIDDEN1; j++)
-            sum += W2[i][j] * h1[j];
+//     // 3. Block 2: Linear(128, 64) -> ReLU -> BatchNorm1d(64)
+//     for (int i = 0; i < HIDDEN2; i++) {
+//         float sum = B2[i];
+//         for (int j = 0; j < HIDDEN1; j++)
+//             sum += W2[i][j] * h1[j];
             
-        float relu_val = relu(sum);
+//         float relu_val = relu(sum);
         
-        h2[i] = ((relu_val - BN2_M[i]) / sqrt(BN2_V[i] + 1e-5f)) * BN2_W[i] + BN2_B[i];
-    }
+//         h2[i] = ((relu_val - BN2_M[i]) / sqrt(BN2_V[i] + 1e-5f)) * BN2_W[i] + BN2_B[i];
+//     }
 
-    // 4. Block 3: Linear(64, 32) -> ReLU (No BatchNorm here in your model)
-    for (int i = 0; i < HIDDEN3; i++) {
-        float sum = B3[i];
-        for (int j = 0; j < HIDDEN2; j++)
-            sum += W3[i][j] * h2[j];
+//     // 4. Block 3: Linear(64, 32) -> ReLU (No BatchNorm here in your model)
+//     for (int i = 0; i < HIDDEN3; i++) {
+//         float sum = B3[i];
+//         for (int j = 0; j < HIDDEN2; j++)
+//             sum += W3[i][j] * h2[j];
             
-        h3[i] = relu(sum);
-    }
+//         h3[i] = relu(sum);
+//     }
 
-    // 5. Output Layer: Linear(32, 5)
-    for (int i = 0; i < OUTPUT_SIZE; i++) {
-        float sum = B4[i];
-        for (int j = 0; j < HIDDEN3; j++)
-            sum += W4[i][j] * h3[j];
+//     // 5. Output Layer: Linear(32, 5)
+//     for (int i = 0; i < OUTPUT_SIZE; i++) {
+//         float sum = B4[i];
+//         for (int j = 0; j < HIDDEN3; j++)
+//             sum += W4[i][j] * h3[j];
             
-        out[i] = sum;
-    }
+//         out[i] = sum;
+//     }
 
-    return argmax(out, OUTPUT_SIZE);
-}
+//     return argmax(out, OUTPUT_SIZE);
+// }
 
-void LoadModelWeights()
-{
+// void LoadModelWeights()
+// {
+//     FILE *f = fopen("model_weights.txt", "r");
+//     if (!f) {
+//         printf("ERROR: Cannot open model_weights.txt\n");
+//         useML=0;
+//         return;
+//     }
+//     useML=1;
+
+//     char name[256];
+
+//     while (fscanf(f, "%s", name) != EOF)
+//     {
+//         // --- Layer 0: Linear(13, 128) ---
+//         if (strcmp(name, "model.0.weight") == 0) {
+//             for (int i = 0; i < HIDDEN1; i++)
+//                 for (int j = 0; j < INPUT_SIZE; j++) fscanf(f, "%f", &W1[i][j]);
+//         }
+//         else if (strcmp(name, "model.0.bias") == 0) {
+//             for (int i = 0; i < HIDDEN1; i++) fscanf(f, "%f", &B1[i]);
+//         }
+        
+//         // --- Layer 2: BatchNorm1d(128) ---
+//         else if (strcmp(name, "model.2.weight") == 0) { // gamma
+//             for (int i = 0; i < HIDDEN1; i++) fscanf(f, "%f", &BN1_W[i]);
+//         }
+//         else if (strcmp(name, "model.2.bias") == 0) { // beta
+//             for (int i = 0; i < HIDDEN1; i++) fscanf(f, "%f", &BN1_B[i]);
+//         }
+//         else if (strcmp(name, "model.2.running_mean") == 0) {
+//             for (int i = 0; i < HIDDEN1; i++) fscanf(f, "%f", &BN1_M[i]);
+//         }
+//         else if (strcmp(name, "model.2.running_var") == 0) {
+//             for (int i = 0; i < HIDDEN1; i++) fscanf(f, "%f", &BN1_V[i]);
+//         }
+
+//         // --- Layer 3: Linear(128, 64) ---
+//         else if (strcmp(name, "model.3.weight") == 0) {
+//             for (int i = 0; i < HIDDEN2; i++)
+//                 for (int j = 0; j < HIDDEN1; j++) fscanf(f, "%f", &W2[i][j]);
+//         }
+//         else if (strcmp(name, "model.3.bias") == 0) {
+//             for (int i = 0; i < HIDDEN2; i++) fscanf(f, "%f", &B2[i]);
+//         }
+        
+//         // --- Layer 5: BatchNorm1d(64) ---
+//         else if (strcmp(name, "model.5.weight") == 0) { 
+//             for (int i = 0; i < HIDDEN2; i++) fscanf(f, "%f", &BN2_W[i]);
+//         }
+//         else if (strcmp(name, "model.5.bias") == 0) { 
+//             for (int i = 0; i < HIDDEN2; i++) fscanf(f, "%f", &BN2_B[i]);
+//         }
+//         else if (strcmp(name, "model.5.running_mean") == 0) {
+//             for (int i = 0; i < HIDDEN2; i++) fscanf(f, "%f", &BN2_M[i]);
+//         }
+//         else if (strcmp(name, "model.5.running_var") == 0) {
+//             for (int i = 0; i < HIDDEN2; i++) fscanf(f, "%f", &BN2_V[i]);
+//         }
+
+//         // --- Layer 6: Linear(64, 32) ---
+//         else if (strcmp(name, "model.6.weight") == 0) {
+//             for (int i = 0; i < HIDDEN3; i++)
+//                 for (int j = 0; j < HIDDEN2; j++) fscanf(f, "%f", &W3[i][j]);
+//         }
+//         else if (strcmp(name, "model.6.bias") == 0) {
+//             for (int i = 0; i < HIDDEN3; i++) fscanf(f, "%f", &B3[i]);
+//         }
+        
+//         // --- Layer 8: Linear(32, 5) ---
+//         else if (strcmp(name, "model.8.weight") == 0) {
+//             for (int i = 0; i < OUTPUT_SIZE; i++)
+//                 for (int j = 0; j < HIDDEN3; j++) fscanf(f, "%f", &W4[i][j]);
+//         }
+//         else if (strcmp(name, "model.8.bias") == 0) {
+//             for (int i = 0; i < OUTPUT_SIZE; i++) fscanf(f, "%f", &B4[i]);
+//         }
+//         // Safely ignore any unmapped strings to prevent infinite loops or crashes
+//     }
+
+//     fclose(f);
+//     printf("Model weights loaded successfully.\n");
+// }
+
+// void LoadScaler()
+// {
+//     FILE *f = fopen("scaler.txt", "r");
+//     if (!f) {
+//         printf("ERROR: Cannot open scaler.txt\n");
+//         return;
+//     }
+
+//     // mean
+//     for (int i = 0; i < INPUT_SIZE; i++)
+//         fscanf(f, "%f", &scaler_mean[i]);
+
+//     // scale (std)
+//     for (int i = 0; i < INPUT_SIZE; i++)
+//         fscanf(f, "%f", &scaler_scale[i]);
+
+//     fclose(f);
+//     printf("Scaler loaded successfully.\n");
+// }
+
+
+#define INPUT_SIZE 14
+
+extern If_Obj_t * If_ManObj( If_Man_t * p, int i );
+
+// --- NEW GLOBAL VARIABLES FOR DECISION TREE ---
+typedef struct {
+    int feature_idx;
+    float threshold;
+    int left_child;
+    int right_child;
+    int class_val;
+} DTNode;
+
+static DTNode * g_TreeNodes = NULL;
+
+// --- LOAD FUNCTION ---
+void LoadModelWeights() {
     FILE *f = fopen("model_weights.txt", "r");
     if (!f) {
-        printf("ERROR: Cannot open model_weights.txt\n");
+        printf("Vanilla Mode: model_weights.txt hidden. ML Disabled.\n");
+        useML = 0;
         return;
     }
-
-    char name[256];
-
-    while (fscanf(f, "%s", name) != EOF)
-    {
-        // --- Layer 0: Linear(13, 128) ---
-        if (strcmp(name, "model.0.weight") == 0) {
-            for (int i = 0; i < HIDDEN1; i++)
-                for (int j = 0; j < INPUT_SIZE; j++) fscanf(f, "%f", &W1[i][j]);
-        }
-        else if (strcmp(name, "model.0.bias") == 0) {
-            for (int i = 0; i < HIDDEN1; i++) fscanf(f, "%f", &B1[i]);
-        }
-        
-        // --- Layer 2: BatchNorm1d(128) ---
-        else if (strcmp(name, "model.2.weight") == 0) { // gamma
-            for (int i = 0; i < HIDDEN1; i++) fscanf(f, "%f", &BN1_W[i]);
-        }
-        else if (strcmp(name, "model.2.bias") == 0) { // beta
-            for (int i = 0; i < HIDDEN1; i++) fscanf(f, "%f", &BN1_B[i]);
-        }
-        else if (strcmp(name, "model.2.running_mean") == 0) {
-            for (int i = 0; i < HIDDEN1; i++) fscanf(f, "%f", &BN1_M[i]);
-        }
-        else if (strcmp(name, "model.2.running_var") == 0) {
-            for (int i = 0; i < HIDDEN1; i++) fscanf(f, "%f", &BN1_V[i]);
-        }
-
-        // --- Layer 3: Linear(128, 64) ---
-        else if (strcmp(name, "model.3.weight") == 0) {
-            for (int i = 0; i < HIDDEN2; i++)
-                for (int j = 0; j < HIDDEN1; j++) fscanf(f, "%f", &W2[i][j]);
-        }
-        else if (strcmp(name, "model.3.bias") == 0) {
-            for (int i = 0; i < HIDDEN2; i++) fscanf(f, "%f", &B2[i]);
-        }
-        
-        // --- Layer 5: BatchNorm1d(64) ---
-        else if (strcmp(name, "model.5.weight") == 0) { 
-            for (int i = 0; i < HIDDEN2; i++) fscanf(f, "%f", &BN2_W[i]);
-        }
-        else if (strcmp(name, "model.5.bias") == 0) { 
-            for (int i = 0; i < HIDDEN2; i++) fscanf(f, "%f", &BN2_B[i]);
-        }
-        else if (strcmp(name, "model.5.running_mean") == 0) {
-            for (int i = 0; i < HIDDEN2; i++) fscanf(f, "%f", &BN2_M[i]);
-        }
-        else if (strcmp(name, "model.5.running_var") == 0) {
-            for (int i = 0; i < HIDDEN2; i++) fscanf(f, "%f", &BN2_V[i]);
-        }
-
-        // --- Layer 6: Linear(64, 32) ---
-        else if (strcmp(name, "model.6.weight") == 0) {
-            for (int i = 0; i < HIDDEN3; i++)
-                for (int j = 0; j < HIDDEN2; j++) fscanf(f, "%f", &W3[i][j]);
-        }
-        else if (strcmp(name, "model.6.bias") == 0) {
-            for (int i = 0; i < HIDDEN3; i++) fscanf(f, "%f", &B3[i]);
-        }
-        
-        // --- Layer 8: Linear(32, 5) ---
-        else if (strcmp(name, "model.8.weight") == 0) {
-            for (int i = 0; i < OUTPUT_SIZE; i++)
-                for (int j = 0; j < HIDDEN3; j++) fscanf(f, "%f", &W4[i][j]);
-        }
-        else if (strcmp(name, "model.8.bias") == 0) {
-            for (int i = 0; i < OUTPUT_SIZE; i++) fscanf(f, "%f", &B4[i]);
-        }
-        // Safely ignore any unmapped strings to prevent infinite loops or crashes
+    
+    int n_nodes;
+    if (fscanf(f, "%d", &n_nodes) != 1) return;
+    
+    if (g_TreeNodes) free(g_TreeNodes); // Prevent memory leaks on reload
+    g_TreeNodes = (DTNode*)malloc(n_nodes * sizeof(DTNode));
+    
+    for (int i = 0; i < n_nodes; i++) {
+        fscanf(f, "%d %f %d %d %d", 
+            &g_TreeNodes[i].feature_idx, 
+            &g_TreeNodes[i].threshold, 
+            &g_TreeNodes[i].left_child, 
+            &g_TreeNodes[i].right_child, 
+            &g_TreeNodes[i].class_val);
     }
-
     fclose(f);
-    printf("Model weights loaded successfully.\n");
+    useML = 1;
 }
 
-void LoadScaler()
-{
-    FILE *f = fopen("scaler.txt", "r");
-    if (!f) {
-        printf("ERROR: Cannot open scaler.txt\n");
-        return;
+// --- PREDICT FUNCTION ---
+int PredictClass(float features[]) {
+    int current_node = 0;
+    
+    // Traverse the tree until we hit a leaf node (left_child == -1)
+    while (g_TreeNodes[current_node].left_child != -1) {
+        int feat = g_TreeNodes[current_node].feature_idx;
+        float thresh = g_TreeNodes[current_node].threshold;
+        
+        if (features[feat] <= thresh) {
+            current_node = g_TreeNodes[current_node].left_child;
+        } else {
+            current_node = g_TreeNodes[current_node].right_child;
+        }
     }
-
-    // mean
-    for (int i = 0; i < INPUT_SIZE; i++)
-        fscanf(f, "%f", &scaler_mean[i]);
-
-    // scale (std)
-    for (int i = 0; i < INPUT_SIZE; i++)
-        fscanf(f, "%f", &scaler_scale[i]);
-
-    fclose(f);
-    printf("Scaler loaded successfully.\n");
+    return g_TreeNodes[current_node].class_val;
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -486,7 +550,7 @@ void If_ObjPerformMappingAnd( If_Man_t * p, If_Obj_t * pObj, int Mode, int fPrep
             continue;
         p->nCutsMerged++;
         p->nCutsTotal++;
-        // check if this cut is contained in any of the available cuts
+        //check if this cut is contained in any of the available cuts
         if ( !p->pPars->fSkipCutFilter && If_CutFilter( pCutSet, pCut, fSave0 ) )
             continue;
         // check if the cut is a special AND-gate cut
@@ -675,77 +739,223 @@ void If_ObjPerformMappingAnd( If_Man_t * p, If_Obj_t * pObj, int Mode, int fPrep
         // ========================================
         // ML-BASED CUT FILTERING (NEW)
         // ========================================
-        if ( p->pPars->fTruth )
-        {
-            g_TotalCands++;
+        //If ML cannot find better cuts, what is its purpose? Runtime acceleration through pruning.
+
+        // Instead of letting ABC evaluate 500,000 cuts using expensive C-code heuristics, the ML model acts as a smart bouncer. 
+        // It looks at the structural features of a cut and says, "This cut is guaranteed to be terrible (Class 4). 
+        // Throw it in the trash now before ABC wastes CPU cycles calculating its exact Area Flow."
+
+        // When your ML model works perfectly, it achieves the exact same Delay and Area as Vanilla ABC, 
+        // but in a fraction of the CPU time. (Right now, your C implementation is slower because 
+        // running a 4-layer MLP via sequential for loops on millions of cuts is bottlenecking the CPU, 
+        // which is why gating it behind nLeaves >= 4 is necessary).
+
+        // ML-BASED CUT SCORING (SLAP APPROACH)
+        // ========================================
+        // pCut->ml_score = 0.0f; // Default baseline for non-ML runs
+
+        // if ( p->pPars->fTruth && useML && Mode == 0 && pCut->nLeaves >= 4)
+        // {
+        //     g_TotalCands++;
             
-            // Extract features
-            int vol_cut = pCut->nLeaves;
-            int cut_height = If_ManCutAigDelay(p, pObj, pCut);
+        //     // Extract features
+        //     int vol_cut = pCut->nLeaves;
+        //     int cut_height = If_ManCutAigDelay(p, pObj, pCut);
             
-            unsigned canon_tt_0 = 0;
-            unsigned canon_tt_1 = 0;
-            word * pTruth = If_CutTruthW(p, pCut);
-            canon_tt_0 = (unsigned)(pTruth[0] & 0xFFFFFFFF);
-            canon_tt_1 = (unsigned)((pTruth[0] >> 32) & 0xFFFFFFFF);
+        //     unsigned canon_tt_0 = 0;
+        //     unsigned canon_tt_1 = 0;
+        //     word * pTruth = If_CutTruthW(p, pCut);
+        //     canon_tt_0 = (unsigned)(pTruth[0] & 0xFFFFFFFF);
+        //     canon_tt_1 = (unsigned)((pTruth[0] >> 32) & 0xFFFFFFFF);
             
-            int num_fo = g_FanoutCounts[pObj->Id];
-            int lvl = pObj->Level;
-            int rev_lvl = g_RevLevels[pObj->Id];
+        //     int num_fo = g_FanoutCounts[pObj->Id];
+        //     int lvl = pObj->Level;
+        //     int rev_lvl = g_RevLevels[pObj->Id];
             
-            int c1_lvl = 0, c1_fo = 0, c1_inv = 0;
-            int c2_lvl = 0, c2_fo = 0, c2_inv = 0;
+        //     int c1_lvl = 0, c1_fo = 0, c1_inv = 0;
+        //     int c2_lvl = 0, c2_fo = 0, c2_inv = 0;
             
-            if ( If_ObjIsAnd(pObj) )
-            {
-                If_Obj_t * c1 = pObj->pFanin0;
-                If_Obj_t * c2 = pObj->pFanin1;
-                c1_lvl = c1->Level;
-                c1_fo  = g_FanoutCounts[c1->Id];
-                c1_inv = pObj->fCompl0;
-                c2_lvl = c2->Level;
-                c2_fo  = g_FanoutCounts[c2->Id];
-                c2_inv = pObj->fCompl1;
-            }
+        //     if ( If_ObjIsAnd(pObj) )
+        //     {
+        //         If_Obj_t * c1 = pObj->pFanin0;
+        //         If_Obj_t * c2 = pObj->pFanin1;
+        //         c1_lvl = c1->Level;
+        //         c1_fo  = g_FanoutCounts[c1->Id];
+        //         c1_inv = pObj->fCompl0;
+        //         c2_lvl = c2->Level;
+        //         c2_fo  = g_FanoutCounts[c2->Id];
+        //         c2_inv = pObj->fCompl1;
+        //     }
             
 
-            // Build feature vector
-            float features[INPUT_SIZE];
-            features[0]  = (float)vol_cut;
-            features[1]  = (float)cut_height;
-            features[2]  = (float)num_fo;      
-            features[3]  = (float)lvl;         
-            features[4]  = (float)rev_lvl;
-            features[5]  = (float)c1_lvl;
-            features[6]  = (float)c1_fo;
-            features[7]  = (float)c1_inv;
-            features[8]  = (float)c2_lvl;
-            features[9]  = (float)c2_fo;
-            features[10] = (float)c2_inv;
+        //     // Build feature vector
+        //     float features[INPUT_SIZE];
+        //     features[0]  = (float)vol_cut;
+        //     features[1]  = (float)cut_height;
+        //     features[2]  = (float)num_fo;      
+        //     features[3]  = (float)lvl;         
+        //     features[4]  = (float)rev_lvl;
+        //     features[5]  = (float)c1_lvl;
+        //     features[6]  = (float)c1_fo;
+        //     features[7]  = (float)c1_inv;
+        //     features[8]  = (float)c2_lvl;
+        //     features[9]  = (float)c2_fo;
+        //     features[10] = (float)c2_inv;
             
-            // ML prediction
-            int pred_class = PredictClass(features);
-            g_ClassDist[pred_class]++;  // Track distribution
-            if (g_TotalCands == 1) { 
-                printf("\nDEBUG - Cut 1 Normalized Features:\n");
-                for (int j = 0; j < INPUT_SIZE; j++) {
-                    printf("%f ", features[j]);
-                }
-                printf("\n\n");
-            }            
+            
+        //     // ML prediction
+        //     int pred_class = PredictClass(features);
+        //     g_ClassDist[pred_class]++;  // Track distribution
+        //     if (g_TotalCands == 1) { 
+        //         printf("\nDEBUG - Cut 1 Normalized Features:\n");
+        //         for (int j = 0; j < INPUT_SIZE; j++) {
+        //             printf("%f ", features[j]);
+        //         }
+        //         printf("\n\n");
+        //     }            
             // OPTION 1: Hard filter (Uncomment to enable strict drop)
             // Only drop the cut if we ALREADY have at least one valid cut saved
-            if (pred_class >= 3 && pCutSet->nCuts > 0) { 
-                g_MLFiltered++;
-                continue; 
-            }
+            // if (pred_class >= 3 && pCutSet->nCuts > 0) { 
+            //     g_MLFiltered++;
+            //     continue; 
+            // }
+
+            // INSTEAD OF DROPPING THE CUT, WE SCORE IT
+            // Class 0 (Best) -> Class 4 (Worst)
+            // pCut->ml_score = (float)pred_class;
 
             // OPTION 2: Soft Area/Cost Penalty
-            g_MLAdjusted++;
-            float ml_penalty = (float)(pred_class * pred_class);
-            pCut->Cost += (int)(ml_penalty * 50.0);  
-            pCut->Area += (float)(ml_penalty * 5.0); // Adjust area to influence default ABC heuristics
-        }
+            // g_MLAdjusted++;
+            // float ml_penalty = (float)(pred_class * pred_class);
+            // pCut->Cost += (int)(ml_penalty * 50.0);  
+            // pCut->Area += (float)(ml_penalty * 5.0); // Adjust area to influence default ABC heuristics
+
+
+            //========================================
+            //ML-BASED CUT SCORING (SLAP APPROACH)
+            //========================================
+            pCut->ml_score = 0.0f; // Default priority for trivial cuts & Vanilla runs
+            
+            if ( p->pPars->fTruth && useML && Mode == 0 && pCut->nLeaves >= 4)
+            {
+                g_TotalCands++;
+                
+                // 1. Basic Features
+                int vol_cut = pCut->nLeaves;
+                int cut_height = If_ManCutAigDelay(p, pObj, pCut);
+                int num_fo = g_FanoutCounts[pObj->Id];
+                int lvl = pObj->Level;
+                int rev_lvl = g_RevLevels[pObj->Id];
+                
+                // 2. Child Features
+                int c1_lvl = 0, c1_fo = 0, c1_inv = 0;
+                int c2_lvl = 0, c2_fo = 0, c2_inv = 0;
+                
+                if ( If_ObjIsAnd(pObj) )
+                {
+                    If_Obj_t * c1 = pObj->pFanin0;
+                    If_Obj_t * c2 = pObj->pFanin1;
+                    c1_lvl = c1->Level;
+                    c1_fo  = g_FanoutCounts[c1->Id];
+                    c1_inv = pObj->fCompl0;
+                    c2_lvl = c2->Level;
+                    c2_fo  = g_FanoutCounts[c2->Id];
+                    c2_inv = pObj->fCompl1;
+                }
+                
+                // 3. Aggregate Leaf Features
+                int max_leaf_lvl = 0;
+                int min_leaf_rev = 999999;
+                int sum_leaf_fo = 0;
+                
+                for (int v = 0; v < pCut->nLeaves; v++) {
+                    int leaf_id = pCut->pLeaves[v];
+                    If_Obj_t * pLeaf = If_ManObj(p, leaf_id);
+                    
+                    int l_lvl = pLeaf->Level;
+                    int l_rev = g_RevLevels[leaf_id];
+                    int l_fo  = g_FanoutCounts[leaf_id];
+                    
+                    if (l_lvl > max_leaf_lvl) max_leaf_lvl = l_lvl;
+                    if (l_rev < min_leaf_rev) min_leaf_rev = l_rev;
+                    sum_leaf_fo += l_fo;
+                }
+                float mean_leaf_fo = ((float)sum_leaf_fo / (float)pCut->nLeaves);
+
+                // 4. Build Feature Vector (Size 14)
+                float features[INPUT_SIZE];
+                features[0]  = (float)vol_cut;
+                features[1]  = (float)cut_height;
+                features[2]  = (float)num_fo;      
+                features[3]  = (float)lvl;         
+                features[4]  = (float)rev_lvl;
+                features[5]  = (float)c1_lvl;
+                features[6]  = (float)c1_fo;
+                features[7]  = (float)c1_inv;
+                features[8]  = (float)c2_lvl;
+                features[9]  = (float)c2_fo;
+                features[10] = (float)c2_inv;
+                features[11] = (float)max_leaf_lvl;
+                features[12] = (float)min_leaf_rev;
+                features[13] = (float)mean_leaf_fo;
+                
+                // 5. ML Prediction (Class 0 to 4)
+                int pred_class = PredictClass(features);
+                g_ClassDist[pred_class]++;  
+                
+                pCut->ml_score = (float)pred_class; 
+            }
+            //========================================
+        // ULTRA-FAST ML SCORING (O(1) Features Only)
+        // ========================================
+        // pCut->ml_score = 0.0f; 
+        
+        // if ( p->pPars->fTruth && useML && Mode == 0 && pCut->nLeaves >= 4)
+        // {
+        //     g_TotalCands++;
+            
+        //     // 1. FAST Features (Instant memory lookups)
+        //     int vol_cut = pCut->nLeaves;
+        //     int num_fo = g_FanoutCounts[pObj->Id];
+        //     int lvl = pObj->Level;
+        //     int rev_lvl = g_RevLevels[pObj->Id];
+            
+        //     int c1_lvl = 0, c1_fo = 0, c1_inv = 0;
+        //     int c2_lvl = 0, c2_fo = 0, c2_inv = 0;
+            
+        //     if ( If_ObjIsAnd(pObj) )
+        //     {
+        //         If_Obj_t * c1 = pObj->pFanin0;
+        //         If_Obj_t * c2 = pObj->pFanin1;
+        //         c1_lvl = c1->Level;
+        //         c1_fo  = g_FanoutCounts[c1->Id];
+        //         c1_inv = pObj->fCompl0;
+        //         c2_lvl = c2->Level;
+        //         c2_fo  = g_FanoutCounts[c2->Id];
+        //         c2_inv = pObj->fCompl1;
+        //     }
+            
+        //     // NOTE: We deleted cut_height and the entire for-loop over the leaves!
+
+        //     // 2. Build Feature Vector (Size 10)
+        //     float features[INPUT_SIZE];
+        //     features[0] = (float)vol_cut;
+        //     features[1] = (float)num_fo;      
+        //     features[2] = (float)lvl;         
+        //     features[3] = (float)rev_lvl;
+        //     features[4] = (float)c1_lvl;
+        //     features[5] = (float)c1_fo;
+        //     features[6] = (float)c1_inv;
+        //     features[7] = (float)c2_lvl;
+        //     features[8] = (float)c2_fo;
+        //     features[9] = (float)c2_inv;
+            
+        //     // 3. Ultra-Fast Shallow DT Prediction
+        //     int pred_class = PredictClass(features);
+        //     g_ClassDist[pred_class]++;  
+            
+        //     pCut->ml_score = (float)pred_class; 
+        // }
         // ========================================
         
         // compute area of the cut (this area may depend on the application specific cost)
@@ -1124,7 +1334,7 @@ int If_ManPerformMappingRound( If_Man_t * p, int nCutsUsed, int Mode, int fPrepr
     static int model_loaded = 0;
     if (!model_loaded) {
         LoadModelWeights();
-        LoadScaler();
+        // LoadScaler();
         model_loaded = 1;
     }
     
